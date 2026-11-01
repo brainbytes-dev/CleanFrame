@@ -38,6 +38,7 @@ var BURST_LIMIT = 3;
 var STAND_DOWN = 300000;             // five minutes hands-off after a burst
 var REQUEST_TIMEOUT = 1500;
 var CONTROL_PORT = 47791;            // loopback only; CleanFrame and diagnostics
+var COVERED_DELAY = 900;             // let the system menu settle before reclaiming
 
 var started = false;
 var stopped = false;
@@ -88,11 +89,21 @@ function probeInputs() {
   }
 }
 
+/* Short in-memory trace, read over the developer connection. A single status snapshot
+   cannot show what the service saw while another screen was in front, and the log file on
+   disk cannot be pulled from the app's data directory, so keep the recent history here. */
+var history = [];
+function record(kind, detail) {
+  history.push({ at: new Date().toISOString(), kind: kind, detail: detail });
+  if (history.length > 60) { history.shift(); }
+}
+
 var LOG = '/opt/usr/home/owner/apps_rw/nClrkHome1/data/cf-service.log';
 var fs = null;
 try { fs = require('fs'); } catch (e) { fs = null; }
 function note(message) {
   diag.lastEvent = message;
+  record('event', message);
   if (!fs) { return; }
   try {
     fs.appendFileSync(LOG, new Date().toISOString() + ' ' + message + '\n');
@@ -190,15 +201,16 @@ function tick() {
     var at = Date.now();
     if (me.visible) {
       // Back in front: the handover is over and the hidden timer restarts from scratch.
+      if (selfWasVisible !== true) { record('visible', 'launcher reported visible'); }
       if (aside) { note('handover cleared (' + asideApp + ')'); }
       aside = false; asideApp = null; hiddenSince = 0; selfWasVisible = true;
       release(); return;
     }
-    if (selfWasVisible !== false) { hiddenSince = at; }
+    if (selfWasVisible !== false) { hiddenSince = at; record('hidden', 'launcher reported not visible'); }
     selfWasVisible = false;
-    if (aside) { release(); return; }                  // the owner opened an app: leave it alone
-    if (at - hiddenSince < HIDDEN_GRACE) { release(); return; }
-    if (at - lastLaunch() < LAUNCH_GAP) { release(); return; }
+    if (aside) { record('declined', 'standing aside for ' + asideApp); release(); return; }
+    if (at - hiddenSince < HIDDEN_GRACE) { record('declined', 'within hidden grace'); release(); return; }
+    if (at - lastLaunch() < LAUNCH_GAP) { record('declined', 'within launch gap'); release(); return; }
     launch('hidden without a handover');
     release();
   });
@@ -206,7 +218,21 @@ function tick() {
 
 function control(req, res) {
   var parsed = url.parse(req.url, true);
-  if (parsed.pathname === '/aside') {
+  if (parsed.pathname === '/covered') {
+    /* The launcher was covered and is about to be frozen. With no handover announced this is
+       a Home press, which the polling loop cannot see on this TV. Reclaim after a short
+       delay so the system menu has settled and a real app switch has time to announce
+       itself first. */
+    if (aside) {
+      record('declined', 'covered while standing aside for ' + asideApp);
+    } else {
+      record('covered', 'launcher reported itself covered');
+      setTimeout(function () {
+        if (stopped || aside || Date.now() < standDownUntil) { return; }
+        launch('covered without a handover');
+      }, COVERED_DELAY);
+    }
+  } else if (parsed.pathname === '/aside') {
     // CleanFrame is about to open an app. Stand aside until it is visible again.
     aside = true;
     asideApp = typeof parsed.query.id === 'string' ? parsed.query.id.slice(0, 120) : 'unknown';
@@ -223,7 +249,8 @@ function control(req, res) {
     lastEvent: diag.lastEvent, selfStatus: diag.selfStatus, inputs: diag.inputs,
     aside: aside, asideApp: asideApp,
     standDownFor: Math.max(0, standDownUntil - Date.now()),
-    tizenApi: typeof tizen !== 'undefined', fsAvailable: !!fs
+    tizenApi: typeof tizen !== 'undefined', fsAvailable: !!fs,
+    history: history
   }));
 }
 

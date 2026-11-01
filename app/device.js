@@ -115,11 +115,16 @@
     apps: apps, startService: startService
   };
   startService();
-  // Re-ensure the service whenever the launcher comes back to the front, in case it was
-  // reaped while another app had the screen.
+  /* The TV's app API is no help for noticing that the system menu covers the launcher: on a
+     2019 Tizen 5.0 set, Samsung's home screen is a system overlay rather than an app, so
+     the launcher keeps reporting itself visible the whole time it is buried. Measured over
+     119 polls with the menu on screen.
+     The page itself does get told, though, just before the runtime freezes it. Report that
+     to the service while we still can, and let it decide whether a reclaim is wanted. */
   if (window.document && document.addEventListener) {
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) { startService(); }
+      if (document.hidden) { tellService('/covered'); return; }
+      startService();
     }, false);
   }
 }());
