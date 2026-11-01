@@ -53,7 +53,40 @@ var hiddenSince = 0;
 var selfWasVisible = null;
 
 // Diagnostics, read over the developer connection. Loopback only and read-only.
-var diag = { startedAt: null, ticks: 0, launchCalls: 0, lastEvent: null, selfStatus: null };
+var diag = { startedAt: null, ticks: 0, launchCalls: 0, lastEvent: null, selfStatus: null, inputs: 'not probed' };
+
+/* Read-only capability probe for video sources, to establish whether the documented
+   systeminfo VIDEOSOURCE property returns usable data on this TV before any input-switching
+   feature is designed around it. This only reads; it never changes the source. */
+function probeInputs() {
+  if (typeof tizen === 'undefined' || !tizen.systeminfo) {
+    diag.inputs = 'unsupported: no systeminfo API';
+    return;
+  }
+  try {
+    tizen.systeminfo.getPropertyValue('VIDEOSOURCE', function (info) {
+      var out = { connected: [], all: [] };
+      try {
+        (info.connected || []).forEach(function (src) {
+          out.connected.push({ type: src.type, number: src.number, name: src.name || null });
+        });
+        (info.unconnected || info.disconnected || []).forEach(function (src) {
+          out.all.push({ type: src.type, number: src.number, state: 'unconnected' });
+        });
+        diag.inputs = out;
+      } catch (e) {
+        diag.inputs = 'reply unreadable: ' + (e && e.message);
+      }
+      note('video sources: ' + JSON.stringify(diag.inputs).slice(0, 300));
+    }, function (err) {
+      diag.inputs = 'query failed: ' + (err && (err.name || err.message));
+      note(diag.inputs);
+    });
+  } catch (e) {
+    diag.inputs = 'threw: ' + (e && e.message);
+    note(diag.inputs);
+  }
+}
 
 var LOG = '/opt/usr/home/owner/apps_rw/nClrkHome1/data/cf-service.log';
 var fs = null;
@@ -187,7 +220,7 @@ function control(req, res) {
   res.end(JSON.stringify({
     service: 'cleanframe-start', self: SELF,
     startedAt: diag.startedAt, ticks: diag.ticks, launchCalls: diag.launchCalls,
-    lastEvent: diag.lastEvent, selfStatus: diag.selfStatus,
+    lastEvent: diag.lastEvent, selfStatus: diag.selfStatus, inputs: diag.inputs,
     aside: aside, asideApp: asideApp,
     standDownFor: Math.max(0, standDownUntil - Date.now()),
     tizenApi: typeof tizen !== 'undefined', fsAvailable: !!fs
@@ -207,6 +240,7 @@ module.exports.onStart = function () {
     server = null;
     note('control endpoint unavailable: ' + (e && e.message));
   }
+  probeInputs();
   bootTimer = setTimeout(function () {
     if (stopped) { return; }
     selfStatus(function (me) {
