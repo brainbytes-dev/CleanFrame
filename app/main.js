@@ -13,16 +13,20 @@
   var KEYS = { 37: 'left', 38: 'up', 39: 'right', 40: 'down', 13: 'ok', 27: 'back', 8: 'back', 10009: 'back', 461: 'back' };
   var FULL = 'Home holds nine apps. Remove one first.', LAST = 'Home needs one app';
 
+  /* Apps actually installed on this TV. Upstream shipped an Australian catalogue whose
+     entries appeared on Home whether or not they were installed, and its Prime Video ID
+     does not match this region's package. IDs verified against the TV's own app list.
+     Entries without a bundled brand mark fall back to the icon the TV reports. */
   var PRIMARY_APPS = [
-    { id: 'stremio', name: 'Stremio', mark: true, appId: 'IkWsFHtOY9.Stremio' },
     { id: 'netflix', name: 'Netflix', mark: true, appId: 'org.tizen.netflix-app' },
-    { id: 'disneyplus', name: 'Disney+', mark: true, appId: 'MCmYXNxgcu.DisneyPlus' },
     { id: 'youtube', name: 'YouTube', mark: true, appId: '9Ur5IzDKqV.TizenYouTube' },
+    { id: 'primevideo', name: 'Prime Video', mark: true, appId: 'evKhCgZelL.AmazonIgnitionLauncher2' },
+    { id: 'disneyplus', name: 'Disney+', mark: true, appId: 'MCmYXNxgcu.DisneyPlus' },
     { id: 'appletv', name: 'Apple TV', mark: true, appId: 'com.samsung.tv.aria-video' },
-    { id: 'primevideo', name: 'Prime Video', mark: true, appId: 'org.tizen.primevideo' },
-    { id: 'abciview', name: 'ABC iview', mark: true, appId: 'mWK87Xghap.ABCiview' },
-    { id: 'sbs', name: 'SBS On Demand', mark: true, appId: 'OyE7OuxlUi.SBSOnDemand' },
-    { id: 'applemusic', name: 'Apple Music', mark: true, appId: 'org.tizen.apple.apple-music' }
+    { id: 'spotify', name: 'Spotify', mark: true, appId: 'rJeHak5zRg.Spotify' },
+    { id: 'ard', name: 'ARD Mediathek', mark: false, appId: 'SrAoJxGQUf.ARD' },
+    { id: 'zdf', name: 'ZDF', mark: false, appId: 'yPSlpvfeTf.ZDFmediathek' },
+    { id: 'arte', name: 'ARTE', mark: false, appId: 'aLlph042JZ.arte' }
   ];
   var PRIMARY = PRIMARY_APPS.map(function (a) { return a.id; }), APPS = PRIMARY_APPS.slice(), ALPHA = [];
   var WALLS = window.CleanFrameWallpapers || [{ id: 'misty', name: 'Misty coast', tone: 'light', ut: { tr: 'mist', br: 'mist' }, frostVeil: .20 }];
@@ -338,7 +342,8 @@
       if (!app(id) && id.indexOf('.') > 0) APPS.push({ id: id, appId: id, name: id.split('.').pop(), mark: false });
       if (app(id)) h.push(id);
     });
-    if (!h.length) h = PRIMARY.slice();
+    /* No fixed starting line-up: an unconfigured Home stays empty until the TV reports what
+       is actually installed, then syncHome fills it. */
     (Array.isArray(s.recent) ? s.recent : []).forEach(function (id) { if (safeId(id) && app(id) && h.indexOf(id) < 0 && recent.indexOf(id) < 0 && recent.length < 5) recent.push(id); });
     return {
       bg: pick(modern.bg, LOOK_VALUES.bg, legacyList ? 'dark' : 'photo'), layout: pick(modern.layout, LOOK_VALUES.layout, legacyList ? 'list' : 'dock'),
@@ -463,8 +468,26 @@
     S.press = id; S.lastLaunch = a.name;
     perform(a.name, function (done) { FrameDevice.launchApp(a.appId, done); });
   }
+  /* Home follows the TV. Apps the TV no longer reports are dropped, and a Home that was
+     never configured is filled from what discovery actually found, in the order device.js
+     ranks it. Only ever called after a successful read, so a failed or empty query can
+     never clear a working Home. */
+  function syncHome(found) {
+    var installed = {}, home, recent, c, i, same;
+    if (!found.length) return;
+    for (i = 0; i < found.length; i++) installed[found[i]] = true;
+    home = S.c.home.filter(function (id) { return installed[id]; });
+    if (!home.length) home = found.slice(0, CAP);
+    same = home.length === S.c.home.length;
+    if (same) for (i = 0; i < home.length; i++) if (home[i] !== S.c.home[i]) { same = false; break; }
+    if (same) return;
+    recent = S.c.recent.filter(function (id) { return installed[id]; });
+    c = next(home, recent);
+    if (home.indexOf(c.lastApp) < 0) c.lastApp = home[0];
+    write(c, 'Apps on Home');
+  }
   function refreshCatalog() {
-    var request, oldFocus;
+    var request, oldFocus, found;
     if (catalog.loading) return;
     request = ++catalog.request; catalog.loading = true; catalog.error = null;
     FrameDevice.apps(function (err, entries) {
@@ -483,8 +506,10 @@
         a.name = PRIMARY.indexOf(id) >= 0 ? PRIMARY_APPS[PRIMARY.indexOf(id)].name : String(entry.name).slice(0, 160);
         ALPHA.push(id);
       });
+      found = ALPHA.slice();  // discovery order, primaries first; ALPHA itself goes A-Z below
       ALPHA.sort(function (a, b) { return app(a).name.toLowerCase().localeCompare(app(b).name.toLowerCase()); });
       catalog.loaded = true; catalog.error = null; catalog.revision++;
+      syncHome(found);
       if (top().id === 'apps' && oldFocus && ALPHA.indexOf(oldFocus) >= 0) top().f.i = ALPHA.indexOf(oldFocus);
       norm(); render();
     });

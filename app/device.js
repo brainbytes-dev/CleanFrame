@@ -1,20 +1,24 @@
 /* Public Tizen application APIs. No Mac server, network address or credentials. */
 (function () {
   'use strict';
+  /* IDs verified against this TV's own app list. "Primary" entries bypass the name filter
+     below, which is why CANAL+ is listed: its package name contains "Launcher" and the
+     filter would otherwise hide a genuinely installed app. */
   var IDS = {
-    stremio: 'IkWsFHtOY9.Stremio', netflix: 'org.tizen.netflix-app',
-    disneyplus: 'MCmYXNxgcu.DisneyPlus', youtube: '9Ur5IzDKqV.TizenYouTube',
-    appletv: 'com.samsung.tv.aria-video', primevideo: 'org.tizen.primevideo',
-    abciview: 'mWK87Xghap.ABCiview', sbs: 'OyE7OuxlUi.SBSOnDemand',
-    applemusic: 'org.tizen.apple.apple-music'
+    netflix: 'org.tizen.netflix-app', youtube: '9Ur5IzDKqV.TizenYouTube',
+    primevideo: 'evKhCgZelL.AmazonIgnitionLauncher2', disneyplus: 'MCmYXNxgcu.DisneyPlus',
+    appletv: 'com.samsung.tv.aria-video', spotify: 'rJeHak5zRg.Spotify',
+    ard: 'SrAoJxGQUf.ARD', zdf: 'yPSlpvfeTf.ZDFmediathek', arte: 'aLlph042JZ.arte',
+    canalplus: 'QmpwflxWdt.CanalPlusLauncher'
   };
-  var STREAMING = ['as6cYRgkPy.Binge', '73iTZRTc34.Stan', '5b8c3eb16b.BeamCTVDev',
-    'KaLitts8bq.tenplaySamsungTizen', 'eYuOiOLYQX.KayoSports', 'Ne2ZsPWdKl.9NOW',
-    '3KA0pm7a7V.TubiTV', 'rJeHak5zRg.Spotify', 'icp4AvUPiA.7plus'];
-  var CONSUMER_SYSTEM = ['org.tizen.browser', 'com.microsoft.copilot'];
-  var EXTRA_BRANDS = {'rJeHak5zRg.Spotify': 'spotify', '5b8c3eb16b.BeamCTVDev': 'hbomax', '3KA0pm7a7V.TubiTV': 'tubi'};
-  var INTERNAL = ['adplatform.ADPlayer', 'WykOS4t4F0.cmsWebApp', '25emanual3.emanual',
-    'ZODRT12q2l.WebAccountExtension', 'ByJlgt0XeD.CastSettingsApp', 'tv6pbVMQFF.PrivacyChoices'];
+  var STREAMING = ['kIciSQlYEM.plex', 'CU6377fECH.player', 'testssiptv.SSIPTV'];
+  var CONSUMER_SYSTEM = ['org.tizen.browser', 'com.samsung.tv.gallery'];
+  var EXTRA_BRANDS = {'rJeHak5zRg.Spotify': 'spotify'};
+  /* Samsung plumbing and bloat that should never appear as a choosable app. Package IDs are
+     per-TV, so these are this TV's actual e-Manual, privacy and promotion packages. */
+  var INTERNAL = ['adplatform.ADPlayer', 'WykOS4t4F0.cmsWebApp', 'sOCceB3uAn.emanual',
+    'ZODRT12q2l.WebAccountExtension', 'ByJlgt0XeD.CastSettingsApp', 'jLU2jKvbyN.PrivacyChoices',
+    'yL49PNFmjW.PromotionApp', 'DclHome001.Home'];
   var SELF = 'nClrkHome1.FrameHome';
   function api() { return window.tizen && window.tizen.application; }
   function unavailable(done) {
@@ -58,9 +62,13 @@
         Object.keys(IDS).forEach(function (brand) { known[IDS[brand]] = brand; });
         list.forEach(function (a) {
           var primary = !!known[a.id], stream = STREAMING.indexOf(a.id) >= 0;
-          var consumer = /^[A-Za-z0-9]{10}\.[A-Za-z0-9_-]+$/.test(a.id) || CONSUMER_SYSTEM.indexOf(a.id) >= 0;
-          if (a.id === SELF || INTERNAL.indexOf(a.id) >= 0 || seen[a.id] || !a.name || (!primary && !stream && (!a.show || !consumer))) return;
-          if (!primary && /(?:service|worker|preview|promotion|plugin|launcher|test|sdk|^ep[ -]|factory|daemon)/i.test(a.name + ' ' + a.id)) return;
+          // Trust the TV: Tizen's own "show" flag already marks what belongs in an app menu.
+          // The previous hand-kept package-shape rule hid genuinely installed apps, and its
+          // name filter dropped anything containing "launcher" (for example CANAL+).
+          var listed = a.show !== false && a.show !== 'false';
+          if (a.id === SELF || INTERNAL.indexOf(a.id) >= 0 || seen[a.id] || !a.name) return;
+          if (!primary && !stream && !listed && CONSUMER_SYSTEM.indexOf(a.id) < 0) return;
+          if (!primary && /(?:\bservice\b|worker|plugin|sdk|factory|daemon)/i.test(a.name + ' ' + a.id)) return;
           if (/-dummy$/.test(a.id) || a.id === 'com.samsung.tv.cobalt-yt') return;
           seen[a.id] = true;
           result.push({ appId: a.id, name: a.name, brand: known[a.id] || EXTRA_BRANDS[a.id] || '', icon: a.iconPath || '', rank: primary ? Object.keys(IDS).indexOf(known[a.id]) : (stream ? 20 : 30) });
