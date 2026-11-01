@@ -3,53 +3,68 @@
 // CleanFrame start service.
 //
 // Hidden web apps are frozen on retail TVs, so this runs as a Tizen web service started at
-// boot. Two jobs: open CleanFrame shortly after the TV starts, and bring it back when
-// Samsung's own home screen appears.
+// boot. Two jobs: open CleanFrame shortly after the TV starts, and bring it back when the
+// owner presses Home while CleanFrame is in front.
 //
-// It only acts when Samsung's home screen is actually reported visible. Any other app that
-// owns the screen is left alone, so opening Netflix or YouTube is never interrupted. A
-// failed or unclear status reply never triggers a relaunch.
+// Why it is cooperative rather than observant: on a 2019 Tizen 5.0 TV the local app API
+// answers only for apps installed through developer mode. CleanFrame itself reports
+// running/visible correctly, but every store app and Samsung's own home screen answer 404.
+// The service therefore cannot see what covers the launcher, and relaunching on "not
+// visible" alone would fight Netflix and every other app, which is exactly what the
+// previous third-party launcher did on this TV.
 //
-// Escape hatch: three relaunches inside a minute are treated as the owner deliberately
-// wanting Samsung's menu (for example to delete apps), and the service stands down for five
-// minutes.
+// Instead CleanFrame announces a handover before it opens an app (POST /aside), and the
+// service stands aside until CleanFrame is visible again. A disappearance without a
+// handover is a Home press, and only that is reclaimed.
+//
+// Escape hatch: three reclaims inside a minute are treated as the owner deliberately
+// wanting Samsung's menu (for example to delete apps), and the service stands down for
+// five minutes.
 //
 // Derived from the AeroTizen watcher service (MIT, https://github.com/helalaou/AeroTizen),
-// reduced to the non-Frame fast path.
+// reduced and reworked for this TV's limitations.
 
 var http = require('http');
-
-// Diagnostics. The service has no UI and no open port, so a log file on the TV is the only
-// way to tell "never started" apart from "started but the launch was refused". Pulled with
-// sdb from the app's own data directory. Best-effort: logging never breaks the service.
-var LOG = '/opt/usr/home/owner/apps_rw/nClrkHome1/data/cf-service.log';
-var fs = null;
-try { fs = require('fs'); } catch (e) { fs = null; }
-function log(message) {
-  if (!fs) { return; }
-  try {
-    fs.appendFileSync(LOG, new Date().toISOString() + ' ' + message + '\n');
-  } catch (e) { /* A full or read-only data directory must not stop the service. */ }
-}
+var url = require('url');
 
 var SELF = 'nClrkHome1.FrameHome';
-var STOCK = 'com.samsung.tv.csfs';   // Samsung's built-in home screen
 
-var POLL = 700;
+var POLL = 900;
 var BOOT_DELAY = 4000;               // let the TV settle before the first launch
-var LAUNCH_GAP = 3000;               // ignore the screen right after our own launch
+var LAUNCH_GAP = 4000;               // ignore the screen right after our own launch
+var HIDDEN_GRACE = 1200;             // Samsung's home screen needs a moment to appear
 var BURST_WINDOW = 60000;
 var BURST_LIMIT = 3;
 var STAND_DOWN = 300000;             // five minutes hands-off after a burst
 var REQUEST_TIMEOUT = 1500;
+var CONTROL_PORT = 47791;            // loopback only; CleanFrame and diagnostics
 
 var started = false;
 var stopped = false;
 var timer = null;
 var bootTimer = null;
+var server = null;
 var busy = false;
 var launches = [];                   // timestamps of our own launches
 var standDownUntil = 0;
+var aside = false;                   // CleanFrame handed the screen to another app
+var asideApp = null;
+var hiddenSince = 0;
+var selfWasVisible = null;
+
+// Diagnostics, read over the developer connection. Loopback only and read-only.
+var diag = { startedAt: null, ticks: 0, launchCalls: 0, lastEvent: null, selfStatus: null };
+
+var LOG = '/opt/usr/home/owner/apps_rw/nClrkHome1/data/cf-service.log';
+var fs = null;
+try { fs = require('fs'); } catch (e) { fs = null; }
+function note(message) {
+  diag.lastEvent = message;
+  if (!fs) { return; }
+  try {
+    fs.appendFileSync(LOG, new Date().toISOString() + ' ' + message + '\n');
+  } catch (e) { /* A full or read-only data directory must not stop the service. */ }
+}
 
 function get(path, cb) {
   var settled = false;
@@ -84,8 +99,8 @@ function get(path, cb) {
 }
 
 // Resolves to null when the TV did not give a usable answer. Callers must not act on null.
-function appStatus(id, cb) {
-  get('/api/v2/applications/' + encodeURIComponent(id), function (value) {
+function selfStatus(cb) {
+  get('/api/v2/applications/' + encodeURIComponent(SELF), function (value) {
     var usable = value && typeof value.running === 'boolean' && typeof value.visible === 'boolean';
     cb(usable ? value : null);
   });
@@ -99,63 +114,104 @@ function launch(why) {
     if (now - launches[i] < BURST_WINDOW) { recent.push(launches[i]); }
   }
   launches = recent;
-  // Repeated relaunches mean the owner wants Samsung's menu, or our launch is not sticking.
+  // Repeated reclaims mean the owner wants Samsung's menu, or our launch is not sticking.
   // Either way, stop fighting the screen for a while.
   if (launches.length >= BURST_LIMIT) {
     launches = [];
     standDownUntil = now + STAND_DOWN;
+    note('standing down for five minutes after repeated reclaims');
     return;
   }
   launches.push(now);
-  log('launch attempt (' + why + ')');
+  diag.launchCalls += 1;
+  note('launch attempt (' + why + ')');
   try {
-    tizen.application.launch(SELF, function () { log('launch ok (' + why + ')'); },
-      function (err) { log('launch refused (' + why + '): ' + (err && (err.name || err.message))); });
+    tizen.application.launch(SELF, function () { note('launch ok (' + why + ')'); },
+      function (err) { note('launch refused (' + why + '): ' + (err && (err.name || err.message))); });
   } catch (e) {
     // A failed launch is retried by the next poll, within the burst limit.
-    log('launch threw (' + why + '): ' + (e && e.message));
+    note('launch threw (' + why + '): ' + (e && e.message));
   }
 }
+
+function lastLaunch() { return launches.length ? launches[launches.length - 1] : 0; }
 
 function tick() {
   if (stopped || busy) { return; }
   var now = Date.now();
+  diag.ticks += 1;
   if (now < standDownUntil) { return; }
   busy = true;
   var done = false;
-  var watchdog = setTimeout(release, REQUEST_TIMEOUT * 3);
+  var watchdog = setTimeout(release, REQUEST_TIMEOUT * 2);
   function release() {
     if (done) { return; }
     done = true;
     clearTimeout(watchdog);
     busy = false;
   }
-  appStatus(SELF, function (me) {
+  selfStatus(function (me) {
     if (done || stopped) { release(); return; }
-    if (!me) { release(); return; }                 // unknown state: do nothing
-    if (me.visible) { release(); return; }          // already on screen
-    if (Date.now() - (launches.length ? launches[launches.length - 1] : 0) < LAUNCH_GAP) {
-      release(); return;                            // our own launch may not have landed yet
+    diag.selfStatus = me ? ('visible=' + me.visible + ' running=' + me.running) : 'unavailable';
+    if (!me) { release(); return; }                    // unknown state: never act
+    var at = Date.now();
+    if (me.visible) {
+      // Back in front: the handover is over and the hidden timer restarts from scratch.
+      if (aside) { note('handover cleared (' + asideApp + ')'); }
+      aside = false; asideApp = null; hiddenSince = 0; selfWasVisible = true;
+      release(); return;
     }
-    appStatus(STOCK, function (stock) {
-      if (done || stopped) { release(); return; }
-      // Only Samsung's own home screen is reclaimed. Any other app keeps the screen.
-      if (stock && stock.visible) { launch('samsung home visible'); }
-      release();
-    });
+    if (selfWasVisible !== false) { hiddenSince = at; }
+    selfWasVisible = false;
+    if (aside) { release(); return; }                  // the owner opened an app: leave it alone
+    if (at - hiddenSince < HIDDEN_GRACE) { release(); return; }
+    if (at - lastLaunch() < LAUNCH_GAP) { release(); return; }
+    launch('hidden without a handover');
+    release();
   });
+}
+
+function control(req, res) {
+  var parsed = url.parse(req.url, true);
+  if (parsed.pathname === '/aside') {
+    // CleanFrame is about to open an app. Stand aside until it is visible again.
+    aside = true;
+    asideApp = typeof parsed.query.id === 'string' ? parsed.query.id.slice(0, 120) : 'unknown';
+    hiddenSince = 0;
+    note('handover announced (' + asideApp + ')');
+  } else if (parsed.pathname === '/home') {
+    aside = false; asideApp = null; hiddenSince = 0;
+    note('launcher reported itself in front');
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify({
+    service: 'cleanframe-start', self: SELF,
+    startedAt: diag.startedAt, ticks: diag.ticks, launchCalls: diag.launchCalls,
+    lastEvent: diag.lastEvent, selfStatus: diag.selfStatus,
+    aside: aside, asideApp: asideApp,
+    standDownFor: Math.max(0, standDownUntil - Date.now()),
+    tizenApi: typeof tizen !== 'undefined', fsAvailable: !!fs
+  }));
 }
 
 module.exports.onStart = function () {
   if (started) { return; }
   started = true;
-  log('service onStart; tizen api ' + (typeof tizen !== 'undefined' ? 'present' : 'MISSING') +
-      ', fs ' + (fs ? 'present' : 'MISSING'));
+  diag.startedAt = new Date().toISOString();
+  note('service onStart; tizen api ' + (typeof tizen !== 'undefined' ? 'present' : 'MISSING') +
+       ', fs ' + (fs ? 'present' : 'MISSING'));
+  try {
+    server = http.createServer(control);
+    server.listen(CONTROL_PORT, '127.0.0.1');
+  } catch (e) {
+    server = null;
+    note('control endpoint unavailable: ' + (e && e.message));
+  }
   bootTimer = setTimeout(function () {
     if (stopped) { return; }
-    appStatus(SELF, function (me) {
+    selfStatus(function (me) {
       if (stopped) { return; }
-      log('boot check: self status ' + (me ? 'visible=' + me.visible + ' running=' + me.running : 'UNAVAILABLE'));
+      note('boot check: ' + (me ? 'visible=' + me.visible + ' running=' + me.running : 'status unavailable'));
       if (!me || !me.visible) { launch('boot'); }
     });
   }, BOOT_DELAY);
@@ -170,4 +226,8 @@ module.exports.onExit = function () {
   clearTimeout(bootTimer);
   timer = null;
   bootTimer = null;
+  if (server) {
+    try { server.close(); } catch (e) { /* nothing left to do on exit */ }
+    server = null;
+  }
 };

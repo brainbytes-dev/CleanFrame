@@ -24,9 +24,9 @@
     { id: 'disneyplus', name: 'Disney+', mark: true, appId: 'MCmYXNxgcu.DisneyPlus' },
     { id: 'appletv', name: 'Apple TV', mark: true, appId: 'com.samsung.tv.aria-video' },
     { id: 'spotify', name: 'Spotify', mark: true, appId: 'rJeHak5zRg.Spotify' },
-    { id: 'ard', name: 'ARD Mediathek', mark: false, appId: 'SrAoJxGQUf.ARD' },
-    { id: 'zdf', name: 'ZDF', mark: false, appId: 'yPSlpvfeTf.ZDFmediathek' },
-    { id: 'arte', name: 'ARTE', mark: false, appId: 'aLlph042JZ.arte' }
+    { id: 'arte', name: 'ARTE', mark: false, appId: 'aLlph042JZ.arte' },
+    { id: 'canalplus', name: 'CANAL+', mark: false, appId: 'QmpwflxWdt.CanalPlusLauncher' },
+    { id: 'sunrise', name: 'Sunrise TV', mark: false, appId: 'CU6377fECH.player' }
   ];
   var PRIMARY = PRIMARY_APPS.map(function (a) { return a.id; }), APPS = PRIMARY_APPS.slice(), ALPHA = [];
   var WALLS = window.CleanFrameWallpapers || [{ id: 'misty', name: 'Misty coast', tone: 'light', ut: { tr: 'mist', br: 'mist' }, frostVeil: .20 }];

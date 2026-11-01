@@ -4,14 +4,17 @@
   /* IDs verified against this TV's own app list. "Primary" entries bypass the name filter
      below, which is why CANAL+ is listed: its package name contains "Launcher" and the
      filter would otherwise hide a genuinely installed app. */
+  /* Order here is the ranking used to fill an unconfigured Home (nine slots). Everything
+     installed stays reachable under All apps regardless; this only decides what gets a
+     Home slot by default. ARD, ZDF and Plex are deliberately not ranked: owner's choice. */
   var IDS = {
     netflix: 'org.tizen.netflix-app', youtube: '9Ur5IzDKqV.TizenYouTube',
     primevideo: 'evKhCgZelL.AmazonIgnitionLauncher2', disneyplus: 'MCmYXNxgcu.DisneyPlus',
     appletv: 'com.samsung.tv.aria-video', spotify: 'rJeHak5zRg.Spotify',
-    ard: 'SrAoJxGQUf.ARD', zdf: 'yPSlpvfeTf.ZDFmediathek', arte: 'aLlph042JZ.arte',
-    canalplus: 'QmpwflxWdt.CanalPlusLauncher'
+    arte: 'aLlph042JZ.arte', canalplus: 'QmpwflxWdt.CanalPlusLauncher',
+    sunrise: 'CU6377fECH.player'
   };
-  var STREAMING = ['kIciSQlYEM.plex', 'CU6377fECH.player', 'testssiptv.SSIPTV'];
+  var STREAMING = ['testssiptv.SSIPTV'];
   var CONSUMER_SYSTEM = ['org.tizen.browser', 'com.samsung.tv.gallery'];
   var EXTRA_BRANDS = {'rJeHak5zRg.Spotify': 'spotify'};
   /* Samsung plumbing and bloat that should never appear as a choosable app. Package IDs are
@@ -32,9 +35,24 @@
     function finish(err, value) { if (finished) return; finished = true; clearTimeout(timer); done(err, value); }
     return finish;
   }
+  /* Tell the start service that this launcher is handing the screen to another app, so it
+     does not treat the disappearance as a Home press and pull the launcher back over it.
+     Fire and forget on the loopback address: if the service is not running, nothing here
+     changes. See app/service/index.js for why the handover has to be announced. */
+  function tellService(path) {
+    try {
+      var request = new XMLHttpRequest();
+      request.open('GET', 'http://127.0.0.1:47791' + path, true);
+      request.timeout = 1200;
+      request.onerror = function () {};
+      request.ontimeout = function () {};
+      request.send();
+    } catch (err) { /* The service is optional; never block a launch on it. */ }
+  }
   function launchApp(id, done) {
     if (!api()) { unavailable(done); return; }
     var finish = bounded(done);
+    tellService('/aside?id=' + encodeURIComponent(id));
     try { api().launch(id, function () { finish(null); }, function (err) { finish(failure(err)); }); }
     catch (err) { finish(failure(err)); }
   }
