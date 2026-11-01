@@ -516,7 +516,12 @@
   }
 
   /* ---------- Navigation targets ---------- */
-  function utils() { return ['art', 'apps', 'settings']; }
+  /* Art Mode is a Frame-TV feature. On a set without it the control cannot do anything, so
+     it is left out rather than shown and failing. Reported by the platform layer once the
+     installed-app list has been read. */
+  function utils() {
+    return FrameDevice.hasArt() ? ['art', 'apps', 'settings'] : ['apps', 'settings'];
+  }
   /* prev/next run along the apps; out goes to the controls, inn comes back (or to a per-app action). */
   function axes() {
     var v = S.c.layout === 'list';

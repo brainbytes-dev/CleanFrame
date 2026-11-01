@@ -23,7 +23,10 @@
     'ZODRT12q2l.WebAccountExtension', 'ByJlgt0XeD.CastSettingsApp', 'jLU2jKvbyN.PrivacyChoices',
     'yL49PNFmjW.PromotionApp', 'DclHome001.Home'];
   var SELF = 'nClrkHome1.FrameHome';
-  var SERVICE = 'nClrkHome1.Watch';
+  var ART_APP = 'org.tizen.art-app';
+  /* Null until the installed-app list has been read once. Art Mode is a Frame-TV feature,
+     and offering a control that cannot work is worse than not offering it. */
+  var artAvailable = null;
   function api() { return window.tizen && window.tizen.application; }
   function unavailable(done) {
     done({ message: 'Open CleanFrame on the TV to use this control.', detail: 'The web preview cannot control the TV.' });
@@ -36,24 +39,9 @@
     function finish(err, value) { if (finished) return; finished = true; clearTimeout(timer); done(err, value); }
     return finish;
   }
-  /* Tell the start service that this launcher is handing the screen to another app, so it
-     does not treat the disappearance as a Home press and pull the launcher back over it.
-     Fire and forget on the loopback address: if the service is not running, nothing here
-     changes. See app/service/index.js for why the handover has to be announced. */
-  function tellService(path) {
-    try {
-      var request = new XMLHttpRequest();
-      request.open('GET', 'http://127.0.0.1:47791' + path, true);
-      request.timeout = 1200;
-      request.onerror = function () {};
-      request.ontimeout = function () {};
-      request.send();
-    } catch (err) { /* The service is optional; never block a launch on it. */ }
-  }
   function launchApp(id, done) {
     if (!api()) { unavailable(done); return; }
     var finish = bounded(done);
-    tellService('/aside?id=' + encodeURIComponent(id));
     try { api().launch(id, function () { finish(null); }, function (err) { finish(failure(err)); }); }
     catch (err) { finish(failure(err)); }
   }
@@ -78,6 +66,8 @@
     try {
       api().getAppsInfo(function (list) {
         var known = {}, seen = {}, result = [];
+        // Record Frame-only capability from the raw list, before the consumer filter runs.
+        artAvailable = list.some(function (a) { return a && a.id === ART_APP; });
         Object.keys(IDS).forEach(function (brand) { known[IDS[brand]] = brand; });
         list.forEach(function (a) {
           var primary = !!known[a.id], stream = STREAMING.indexOf(a.id) >= 0;
@@ -97,34 +87,10 @@
       }, function (err) { finish(failure(err)); });
     } catch (err) { finish(failure(err)); }
   }
-  /* Start our own background service, and tell it the launcher is in front.
-     This TV does not honour on-boot for a web service, verified after a cold start, so the
-     service would otherwise never run and nothing would bring the launcher back after a
-     Home press. Starting it here means it is running for as long as the TV stays on.
-     Launching a service that is already running is a no-op, and a failure is ignored: the
-     launcher itself must keep working without it. */
-  function startService() {
-    if (!api()) { return; }
-    try {
-      api().launch(SERVICE, function () { tellService('/home'); }, function () {});
-    } catch (err) { /* The service is optional. */ }
-  }
+  function hasArt() { return artAvailable === true; }
 
   window.FrameDevice = {
     launch: launch, launchApp: launchApp, art: art, home: home, settings: settings,
-    apps: apps, startService: startService
+    apps: apps, hasArt: hasArt
   };
-  startService();
-  /* The TV's app API is no help for noticing that the system menu covers the launcher: on a
-     2019 Tizen 5.0 set, Samsung's home screen is a system overlay rather than an app, so
-     the launcher keeps reporting itself visible the whole time it is buried. Measured over
-     119 polls with the menu on screen.
-     The page itself does get told, though, just before the runtime freezes it. Report that
-     to the service while we still can, and let it decide whether a reclaim is wanted. */
-  if (window.document && document.addEventListener) {
-    document.addEventListener('visibilitychange', function () {
-      if (document.hidden) { tellService('/covered'); return; }
-      startService();
-    }, false);
-  }
 }());
