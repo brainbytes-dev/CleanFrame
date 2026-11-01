@@ -23,6 +23,7 @@
     'ZODRT12q2l.WebAccountExtension', 'ByJlgt0XeD.CastSettingsApp', 'jLU2jKvbyN.PrivacyChoices',
     'yL49PNFmjW.PromotionApp', 'DclHome001.Home'];
   var SELF = 'nClrkHome1.FrameHome';
+  var SERVICE = 'nClrkHome1.Watch';
   function api() { return window.tizen && window.tizen.application; }
   function unavailable(done) {
     done({ message: 'Open CleanFrame on the TV to use this control.', detail: 'The web preview cannot control the TV.' });
@@ -96,5 +97,29 @@
       }, function (err) { finish(failure(err)); });
     } catch (err) { finish(failure(err)); }
   }
-  window.FrameDevice = { launch: launch, launchApp: launchApp, art: art, home: home, settings: settings, apps: apps };
+  /* Start our own background service, and tell it the launcher is in front.
+     This TV does not honour on-boot for a web service, verified after a cold start, so the
+     service would otherwise never run and nothing would bring the launcher back after a
+     Home press. Starting it here means it is running for as long as the TV stays on.
+     Launching a service that is already running is a no-op, and a failure is ignored: the
+     launcher itself must keep working without it. */
+  function startService() {
+    if (!api()) { return; }
+    try {
+      api().launch(SERVICE, function () { tellService('/home'); }, function () {});
+    } catch (err) { /* The service is optional. */ }
+  }
+
+  window.FrameDevice = {
+    launch: launch, launchApp: launchApp, art: art, home: home, settings: settings,
+    apps: apps, startService: startService
+  };
+  startService();
+  // Re-ensure the service whenever the launcher comes back to the front, in case it was
+  // reaped while another app had the screen.
+  if (window.document && document.addEventListener) {
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) { startService(); }
+    }, false);
+  }
 }());
