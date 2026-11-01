@@ -1912,4 +1912,9 @@
   initialise();
   setLook({}, { transient: true, startup: true });
   norm(); render(); fit(); focusStage(); updateClock(); syncRotation();
+  /* Read the installed apps once at startup, after the first paint. Discovery used to run
+     only when the All apps screen or the Home editor was opened, so a Home that had been
+     seeded with apps the TV does not have stayed wrong until the owner happened to go
+     there. Running it here lets syncHome correct Home on every launch. */
+  setTimeout(refreshCatalog, 0);
 })();
